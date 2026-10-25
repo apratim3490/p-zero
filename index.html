@@ -2726,7 +2726,7 @@ function tabAsk(T) {
   let h = '';
   if (qs.pending) {
     const q = qById(B, qs.rand.get(qs.pending.id) || qs.pending.qid), due = qs.pending.t + qs.pending.delay;
-    h += `<div class="pending"><span class="eyebrow">Waiting for an answer</span><p>${esc(q.label)}</p><p class="muted">${T < due ? `Due at ${hm(due)}.` : 'Due now. The answer arrives when the hider’s phone has the game open.'}</p></div>`;
+    h += `<div class="pending"><span class="eyebrow">Waiting for an answer</span><p>${esc(q.label)}</p><p class="muted">${T < due ? `Due at ${hm(due)}.` : `Due now. Answers come from ${esc(nameOf(rd.hider))}’s phone, so it arrives when they have the game open on screen.`}</p></div>`;
   }
   let why = '';
   if (T < rd.hideEnd) why = `Questions open at ${hm(rd.hideEnd)}.`;
@@ -2772,6 +2772,7 @@ function tabHand(T) {
   if (rd.status === 'done') return '<p class="muted">This round is over. Your score is in the log.</p>';
   let h = '';
   const lm = lastMove(), inMove = lm && lm.until > T;
+  h += `<p class="muted small">Keep this game open on screen. Your phone answers the seekers' questions, and it can't while it's locked or in the background.</p>`;
   if (T < rd.hideEnd) h += `<div class="callout"><p>Pick a station and go. Use <b>Travel</b> or tap the map. You lock in wherever you are at ${hm(rd.hideEnd)}.</p></div>`;
   else if (inMove) h += `<div class="callout"><p>Relocating: get to a new station before ${hm(lm.until)}. Seekers are frozen.</p></div>`;
   const qs = qState(roundEvents());
@@ -3136,7 +3137,15 @@ function frame() {
   }
   requestAnimationFrame(frame);
 }
+/* keep the screen awake during a game: the hider's phone answers questions, and a sleeping phone answers nothing */
+let wakeLock = null;
+async function keepAwake() {
+  if (S.view !== 'vPlay' || !S.game || S.game.phase !== 'play' || wakeLock || !navigator.wakeLock) return;
+  try { wakeLock = await navigator.wakeLock.request('screen'); wakeLock.addEventListener('release', () => { wakeLock = null; }); } catch (e) { wakeLock = null; }
+}
 function bindEvents() {
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') { keepAwake(); dirty(); } });
+  document.addEventListener('pointerdown', () => keepAwake(), { passive: true });
   document.addEventListener('click', e => {
     const el = e.target.closest('[data-act]'); if (!el || el.disabled) return;
     if (el.tagName === 'INPUT' && el.type === 'checkbox') return;
