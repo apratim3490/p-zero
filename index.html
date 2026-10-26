@@ -175,6 +175,8 @@ input:focus, select:focus { border-color: var(--accent); }
 .qlist { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
 .qbtn { width: 100%; text-align: left; background: var(--raise); border: 1px solid var(--rule); border-radius: var(--r); padding: 10px 12px; display: flex; flex-direction: column; gap: 2px; }
 .qbtn:hover:not(:disabled) { border-color: var(--ink); }
+.reward-row { display: flex; gap: 8px; align-items: center; font-size: 12px; color: var(--muted); }
+.pips { color: var(--accent); letter-spacing: 1px; font-size: 11px; }
 .qbtn em { font-style: normal; font-size: 12px; color: var(--muted); }
 .cands { display: grid; grid-template-columns: auto 1fr; gap: 0 12px; align-items: center; }
 .cands .check { grid-column: 1 / -1; margin-top: 6px; font-size: 14px; }
@@ -862,6 +864,34 @@ function answerText(B, q, ans) {
   if (q.cat === 'photo') return 'Photo';
   return ans.charAt(0).toUpperCase() + ans.slice(1);
 }
+// ---------- rewards follow difficulty ----------
+// How much does a question give away on this map? Average share of stations a correct answer rules out,
+// over a fixed sample of seeker positions (same on every phone). The hider's card reward follows from it.
+const REWARD_TIERS = [[0.15, 1, 1], [0.30, 2, 1], [0.45, 3, 1], [0.65, 4, 2], [2, 5, 2]];   // [up to, draw, keep]; about the same cards per round as before
+const PHOTO_REWARD = { board: [4, 2], skyline: [4, 2], map: [3, 1] };                       // photos need reading, so a tier below their raw strength
+function questionStrength(B, q) {
+  const r = rng(hashStr(B.name + '|' + q.id)), N = B.list.length;
+  let seekers = B.list; if (q.p === 'lines') seekers = B.list.filter(s => s.lines.length >= 2);
+  if (!seekers.length) return 0;
+  let tot = 0, n = 0;
+  for (let k = 0; k < 10; k++) {
+    const s = seekers[Math.floor(r() * seekers.length)], ctx = { s: s.id };
+    if (q.cat === 'thermo') { const far = B.list.filter(f => { const d = Dist(f, s); return d >= q.D && d <= q.D * 1.6; }); if (!far.length) continue; ctx.from = far[Math.floor(r() * far.length)].id; }
+    const g = new Map(); for (const c of B.list) { const a = answerQ(B, q, c.id, ctx); g.set(a, (g.get(a) || 0) + 1); }
+    let sq = 0; for (const v of g.values()) sq += v * v;
+    tot += 1 - sq / (N * N); n++;
+  }
+  return n ? tot / n : 0;
+}
+function rewardOf(B, qid) {
+  if (!B._rw) B._rw = new Map();
+  if (B._rw.has(qid)) return B._rw.get(qid);
+  const q = qById(B, qid); let out;
+  if (!q) out = { draw: 1, keep: 1, s: 0 };
+  else if (q.cat === 'photo') { const [draw, keep] = PHOTO_REWARD[q.p] || [3, 1]; out = { draw, keep, s: null }; }
+  else { const s = questionStrength(B, q), t = REWARD_TIERS.find(x => s < x[0]); out = { draw: t[1], keep: t[2], s }; }
+  B._rw.set(qid, out); return out;
+}
 // a station name as it would appear on a sign: no bracketed suffix, words that contain letters or digits
 function nameWords(n) { return String(n).replace(/\s*\(.*\)$/, '').split(/\s+/).map(w => w.replace(/[^A-Za-z0-9]/g, '')).filter(Boolean); }
 // the seeker's lines that pass nearest the hider's station (distance to the closest station on each line)
@@ -974,7 +1004,7 @@ function buildDeck(seed, f) {
   for (const [v, n] of [[5, 8], [10, 7], [15, 5], [20, 3], [30, 1]]) for (let i = 0; i < n; i++) c.push('tb:' + Math.max(1, Math.round(v * f)));
   for (const [k, n] of [['veto', 4], ['rand', 4], ['dup', 2], ['d1d2', 3], ['d2d3', 2], ['expand', 2], ['move', 1]]) for (let i = 0; i < n; i++) c.push(k);
   for (const k of Object.keys(CURSES)) { c.push('curse:' + k); c.push('curse:' + k); }
-  return shuffle(c, rng(seed)).map((t, i) => i + ':' + t);
+  return shuffle(c.concat(c), rng(seed)).map((t, i) => i + ':' + t);   // two decks' worth, so bigger rewards don't run it dry
 }
 const cardType = id => id.slice(id.indexOf(':') + 1);
 function cardInfo(id, f) {
@@ -1078,7 +1108,7 @@ function territoryScore(game, B) {
   return sc;
 }
 
-const PZ = { lineEdges, decPoly, waterDist, trackPoint, departures, photoData, rng, hashStr, Dist, shuffle, clamp, r2, genCity, normalizeClaude, ensureConnected, prepare, route, reachTimes, fareOf, legsOf, posAt, jEnd, isMoving, truncate, departurePoint, xyAt, violates, gameNow, fmtClock, fmtDur, MODES, RATES, defaultSettings, TEAMS, PLAYER_COLORS, QCATS, QCAT, questionList, qById, answerQ, answerText, candidates, CURSES, POWERS, buildDeck, cardType, cardInfo, handBonus, CH_INFO, challengeAt, effectsFor, tagTimes, territoryScore, nearestOf, MODE_LABEL, POI_WORD, POI_KINDS, WAIT, SPEED };
+const PZ = { questionStrength, rewardOf, lineEdges, decPoly, waterDist, trackPoint, departures, photoData, rng, hashStr, Dist, shuffle, clamp, r2, genCity, normalizeClaude, ensureConnected, prepare, route, reachTimes, fareOf, legsOf, posAt, jEnd, isMoving, truncate, departurePoint, xyAt, violates, gameNow, fmtClock, fmtDur, MODES, RATES, defaultSettings, TEAMS, PLAYER_COLORS, QCATS, QCAT, questionList, qById, answerQ, answerText, candidates, CURSES, POWERS, buildDeck, cardType, cardInfo, handBonus, CH_INFO, challengeAt, effectsFor, tagTimes, territoryScore, nearestOf, MODE_LABEL, POI_WORD, POI_KINDS, WAIT, SPEED };
 if (typeof module !== 'undefined') module.exports = PZ;
 
 /* ================= PLATFORM ZERO — ready-made city networks (simplified, approximate positions) ================= */
@@ -2185,7 +2215,7 @@ const RULES = {
 function rulesHtml(mode) {
   const m = MODES[mode];
   let extra = '';
-  if (mode === 'hide') extra = `<h4>Question categories</h4><ul class="cats">${QCATS.map(c => `<li><b>${esc(c.n)}</b> · ${esc(c.blurb)} <span class="muted">Hider draws ${c.draw}, keeps ${c.keep}.</span></li>`).join('')}</ul>`;
+  if (mode === 'hide') extra = `<h4>Question categories</h4><ul class="cats">${QCATS.map(c => `<li><b>${esc(c.n)}</b> · ${esc(c.blurb)}</li>`).join('')}</ul><p class="muted small">Rewards follow difficulty: every answer deals the hider cards, from draw 1 keep 1 for questions that give little away up to draw 5 keep 2 for the most revealing. The Ask tab shows each question's reward.</p>`;
   if (mode !== 'hide') extra = `<h4>Station challenges</h4><ul class="cats">${Object.values(CH_INFO).filter((c, i) => mode !== 'territory' || i < 5).map(c => `<li><b>${esc(c.n)}</b> · ${esc(c.how)}</li>`).join('')}</ul>`;
   return `<h2>${esc(m.n)}</h2><ol class="rules">${RULES[mode].map(r => `<li>${esc(r)}</li>`).join('')}</ol>${extra}<p class="muted small">Travel times come from the map: each line has a speed, boarding means waiting for the next service, and you can walk between stations up to ${WALK_MAX} km apart.</p><div class="mrow"><button class="primary" data-act="close">Got it</button></div>`;
 }
@@ -2482,7 +2512,7 @@ function runHider(T, getP, save, bot) {
     const effId = qs.rand.get(q.id) || q.qid, qq = qById(B, effId); if (!qq) continue;
     if (!priv.drawn || !priv.drawn[q.id]) {
       once('draw' + q.id, async () => {
-        const cur = getP(), cat = QCAT[qq.cat], n = cat.draw + (q.extra || 0), deck = deckFor(rd);
+        const cur = getP(), rw = rewardOf(B, qq.id), cat = { keep: rw.keep }, n = rw.draw + (q.extra || 0), deck = deckFor(rd);
         const cards = deck.slice(cur.di, cur.di + n);
         let np = Object.assign({}, cur, { di: cur.di + n, drawn: Object.assign({}, cur.drawn, { [q.id]: 1 }), pend: (cur.pend || []).concat(cards.length ? [{ qid: q.id, cards, keep: Math.min(cat.keep, cards.length) }] : []) });
         if (bot) np = botResolve(np);
@@ -2790,14 +2820,15 @@ function tabAsk(T) {
   h += `<div class="chips cats" role="tablist">${QCATS.map(c => `<button class="chip${S.askCat === c.k ? ' on' : ''}" data-act="askCat" data-k="${c.k}" aria-pressed="${S.askCat === c.k}">${esc(c.n)}</button>`).join('')}</div>`;
   const cat = QCAT[S.askCat];
   h += thBox;
-  h += `<p class="muted small">${esc(cat.blurb)} The hider draws ${cat.draw} card${cat.draw > 1 ? 's' : ''} and keeps ${cat.keep}.${S.askCat === 'photo' ? ' <button class="link" data-act="guide">Landmark guide</button>' : ''}</p>${why ? `<p class="blocked">${esc(why)}</p>` : ''}<ul class="qlist">`;
+  h += `<p class="muted small">${esc(cat.blurb)} The more a question gives away, the more cards the hider gets for answering it.${S.askCat === 'photo' ? ' <button class="link" data-act="guide">Landmark guide</button>' : ''}</p>${why ? `<p class="blocked">${esc(why)}</p>` : ''}<ul class="qlist">`;
   for (const q of questionList(B).filter(x => x.cat === S.askCat)) {
     const asked = qs.asked.has(q.id);
     let dis = !!why || asked, note = asked ? 'Asked' : '';
     if (q.cat === 'thermo' && !asked) { if (!th) { dis = true; note = 'Start the thermometer first'; } else if (moved < q.D) { dis = true; note = `Move ${(q.D - moved).toFixed(1)} km more`; } else note = 'Unlocked'; }
     if (q.cat === 'tent' && q.p === 'lines' && !asked && p) { if (B.S.get(p.at).lines.length < 2) { dis = true; note = 'Your station has only one line'; } }
     else if (q.cat === 'tent' && !asked && p) { const n = (B.poiBy[q.k] || []).filter(x => Dist(x, B.S.get(p.at)) <= q.R).length; if (n < 1) { dis = true; note = `No ${POI_WORD[q.k][1]} within ${q.R} km of you`; } }
-    h += `<li><button class="qbtn" data-act="ask" data-q="${esc(q.id)}"${dis ? ' disabled' : ''}><span>${esc(q.label)}</span>${note ? `<em>${esc(note)}</em>` : ''}</button></li>`;
+    const rw = rewardOf(B, q.id), pips = '●'.repeat(rw.draw) + '○'.repeat(5 - rw.draw);
+    h += `<li><button class="qbtn" data-act="ask" data-q="${esc(q.id)}"${dis ? ' disabled' : ''}><span>${esc(q.label)}</span><span class="reward-row"><span class="pips" aria-hidden="true">${pips}</span>Hider draws ${rw.draw}, keeps ${rw.keep}${note ? ` · ${esc(note)}` : ''}</span></button></li>`;
   }
   return h + '</ul>';
 }
@@ -2832,7 +2863,7 @@ function tabHand(T) {
   if (qs.pending && pr.st) {
     const q = qById(B, qs.rand.get(qs.pending.id) || qs.pending.qid), due = qs.pending.t + qs.pending.delay;
     const hasVeto = pr.hand.find(c => cardType(c) === 'veto'), hasRand = pr.hand.find(c => cardType(c) === 'rand');
-    h += `<div class="pending"><span class="eyebrow">Incoming question</span><p>${esc(q.label)}</p><p class="muted">From ${esc(nameOf(qs.pending.by))} at ${esc(stName(qs.pending.ctx.s))}. Your phone answers truthfully at ${hm(due)}${q.cat === 'photo' ? ' with this photo:' : `: <b>${esc(answerText(B, q, answerQ(B, q, pr.st, qs.pending.ctx)))}</b>`}</p>${q.cat === 'photo' ? photoSvg(q.p, photoData(B, q.p, pr.st, rd.seed)) : ''}
+    h += `<div class="pending"><span class="eyebrow">Incoming question · you draw ${rewardOf(B, q.id).draw + (qs.pending.extra || 0)}, keep ${rewardOf(B, q.id).keep}</span><p>${esc(q.label)}</p><p class="muted">From ${esc(nameOf(qs.pending.by))} at ${esc(stName(qs.pending.ctx.s))}. Your phone answers truthfully at ${hm(due)}${q.cat === 'photo' ? ' with this photo:' : `: <b>${esc(answerText(B, q, answerQ(B, q, pr.st, qs.pending.ctx)))}</b>`}</p>${q.cat === 'photo' ? photoSvg(q.p, photoData(B, q.p, pr.st, rd.seed)) : ''}
       <div class="inline gap">${hasVeto ? `<button class="ghost" data-act="playVeto" data-c="${hasVeto}">Play Veto</button>` : ''}${hasRand && !qs.rand.has(qs.pending.id) ? `<button class="ghost" data-act="playRand" data-c="${hasRand}">Play Randomise</button>` : ''}</div></div>`;
   }
   for (const pd of pr.pend || []) {
