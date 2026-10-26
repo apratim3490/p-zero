@@ -791,7 +791,7 @@ function questionList(B) {
   const radii = [...new Set([niceR(S * 0.12), niceR(S * 0.25)])];
   for (const k of POI_KINDS) if (k !== 'airport' && (B.poiBy[k] || []).length >= 2) for (const R of radii) q.push({ id: `tent:${k}:${R}`, cat: 'tent', k, R, label: `Of the ${POI_WORD[k][1]} within ${R} km of me, which are you closest to?` });
   q.push({ id: 'tent:lines', cat: 'tent', p: 'lines', label: 'Of the lines at my station, which one are you closest to?' });
-  q.push({ id: 'intel:letter', cat: 'intel', p: 'letter', label: "What letter does your station's name start with?" });
+  q.push({ id: 'intel:half', cat: 'intel', p: 'half', label: "Is your station's first letter in A–M or N–Z?" });
   q.push({ id: 'intel:count', cat: 'intel', p: 'count', label: 'How many lines serve your station?' });
   q.push({ id: 'intel:term', cat: 'intel', p: 'term', label: 'Is your station the end of a line?' });
   q.push({ id: 'intel:mode', cat: 'intel', p: 'mode', label: 'Which kinds of transport stop at your station?' });
@@ -799,11 +799,9 @@ function questionList(B) {
   if (B.zones && B.list.some(s => s.z === '1')) q.push({ id: 'intel:zone1', cat: 'intel', p: 'zone1', label: 'Is your station in Zone 1?' });
   if (B.sides) q.push({ id: 'intel:side', cat: 'intel', p: 'side', label: `Is your station north or south of ${B.river}?` });
   q.push({ id: 'intel:words', cat: 'intel', p: 'words', label: "How many words are in your station's name?" });
-  q.push({ id: 'intel:letters', cat: 'intel', p: 'letters', label: "How many letters are in your station's name?" });
-  q.push({ id: 'photo:board', cat: 'photo', p: 'board', label: 'Send a photo of the departure board.' });
+  q.push({ id: 'photo:board', cat: 'photo', p: 'board', label: 'Send a photo of the departure board showing the next train.' });
   q.push({ id: 'photo:skyline', cat: 'photo', p: 'skyline', label: 'Send a photo of the skyline, all the way round.' });
-  q.push({ id: 'photo:map', cat: 'photo', p: 'map', label: 'Send a photo of the local map outside the station.' });
-  q.push({ id: 'photo:sign', cat: 'photo', p: 'sign', label: 'Send a photo of the station name sign.' });
+  q.push({ id: 'photo:map', cat: 'photo', p: 'map', label: 'Send a photo of the tracks on the local street map.' });
   B._q = q; B._qm = new Map(q.map(x => [x.id, x]));
   return q;
 }
@@ -838,7 +836,7 @@ function answerQ(B, q, hId, ctx) {
     }
     case 'photo': return 'photo';
     case 'intel':
-      if (q.p === 'letter') return (h.n.trim()[0] || '?').toUpperCase();
+      if (q.p === 'half') return /^[A-M]/i.test(nameWords(h.n).join('')) ? 'A–M' : 'N–Z';
       if (q.p === 'count') return String(h.lines.length);
       if (q.p === 'term') return h.term ? 'yes' : 'no';
       if (q.p === 'zone') return String(h.z || '?');
@@ -856,7 +854,7 @@ function answerText(B, q, ans) {
   if (q.cat === 'tent') { if (ans === 'out') return `I'm more than ${q.R} km from you.`; if (ans === 'none') return `There are no ${POI_WORD[q.k][1]} within ${q.R} km of you.`; const p = B.pois.find(x => x.id === ans); return p ? p.n : ans; }
   if (q.cat === 'intel' && q.p === 'count') return ans + (ans === '1' ? ' line' : ' lines');
   if (q.cat === 'intel' && q.p === 'mode') return ans.split('+').map(m => MODE_LABEL[m] || m).join(', ');
-  if (q.cat === 'intel' && q.p === 'letter') return '“' + ans + '”';
+  if (q.cat === 'intel' && q.p === 'half') return 'Starts with a letter from ' + ans;
   if (q.cat === 'intel' && q.p === 'side') return (ans === 'south' ? 'South of ' : 'North of ') + B.river;
   if (q.cat === 'intel' && q.p === 'words') return ans + (ans === '1' ? ' word' : ' words');
   if (q.cat === 'intel' && q.p === 'letters') return ans + ' letters';
@@ -926,28 +924,28 @@ function clipRing(pts, h) {
 }
 function photoData(B, kind, sid, seed) {
   const s = B.S.get(sid);
-  if (kind === 'board') return { rows: departures(B, sid, seed) };
+  if (kind === 'board') return { rows: departures(B, sid, seed).slice(0, 1) };
   if (kind === 'sign') return { w: nameWords(s.n).map(w => w[0] + '·'.repeat(w.length - 1)), z: s.z || null };
   if (kind === 'skyline') {
     const items = [];
-    for (const m of B.marks) { const d = Math.max(0.15, Dist(s, m)); if (d <= Math.min(16, 0.9 + m.h / 22)) items.push({ s: m.s, b: Math.round(bearing(s, m)), d: Math.round(d * 100) / 100, h: m.h }); }
-    for (const p of B.pois) { if (p.k !== 'stadium' && p.k !== 'airport') continue; if (B.marks.some(m => Dist(m, p) < 0.4)) continue; const d = Math.max(0.15, Dist(s, p)); if (d <= 3) items.push({ s: p.k === 'airport' ? 'tower' : 'bowl', b: Math.round(bearing(s, p)), d: Math.round(d * 100) / 100, h: p.k === 'airport' ? 60 : 45 }); }
+    for (const m of B.marks) { const d = Math.max(0.15, Dist(s, m)); if (d <= 0.5 + m.h / 40) items.push({ s: m.s, b: Math.round(bearing(s, m)), d: Math.round(d * 100) / 100, h: m.h }); }
+    for (const p of B.pois) { if (p.k !== 'stadium' && p.k !== 'airport') continue; if (B.marks.some(m => Dist(m, p) < 0.4)) continue; const d = Math.max(0.15, Dist(s, p)); if (d <= 1.5) items.push({ s: p.k === 'airport' ? 'tower' : 'bowl', b: Math.round(bearing(s, p)), d: Math.round(d * 100) / 100, h: p.k === 'airport' ? 60 : 45 }); }
     const wd = waterDist(B, s);
+    const rot = hashStr(seed + sid + 'rot') % 360;   // the photo starts facing a random direction
+    for (const it of items) it.b = (it.b + rot) % 360;
     return { items, water: wd < 0.35 ? 1 : 0, seed: hashStr(seed + 'sky') % 100000 };
   }
   if (kind === 'map') {
-    const R = 1.2, segs = [], dots = [], water = [];
-    const rel = (x, y) => [Math.round((x - s.x) * 1000) / 1000, Math.round((y - s.y) * 1000) / 1000];
+    const R = 0.6, segs = [], dots = [], water = [];
+    const a = (hashStr(seed + sid + 'map') % 360) * Math.PI / 180, ca = Math.cos(a), sa = Math.sin(a);   // map turned to a random angle
+    const rel = (x, y) => { const dx = x - s.x, dy = y - s.y; return [Math.round((dx * ca - dy * sa) * 1000) / 1000, Math.round((dx * sa + dy * ca) * 1000) / 1000]; };
     for (const pr of B.pairs.values()) {
       const A = B.S.get(pr.a), C = B.S.get(pr.b);
-      if (Math.min(Dist(A, s), Dist(C, s)) > R * 2.2) continue;
       const pts = B.geo.get(pr.a + '|' + pr.b) || [[A.x, A.y], [C.x, C.y]];
+      if (!pts.some(q => Math.hypot(q[0] - s.x, q[1] - s.y) < R * 1.6) && Math.min(Dist(A, s), Dist(C, s)) > R * 1.6) continue;
       segs.push({ n: pr.lines.length, p: pts.map(q => rel(q[0], q[1])) });
     }
-    for (const t of B.list) if (Dist(t, s) <= R * 1.5) dots.push(rel(t.x, t.y));
-    const box = R * 1.6;
-    for (const ring of B.water) { if (!ring.some(q => Math.hypot(q[0] - s.x, q[1] - s.y) < R * 4)) continue; const c = clipRing(ring.map(q => [q[0] - s.x, q[1] - s.y]), box); if (c.length >= 3) water.push(c.map(q => [Math.round(q[0] * 1000) / 1000, Math.round(q[1] * 1000) / 1000])); }
-    return { R, segs, dots, water };
+    return { R, segs, dots, water };   // no stations, river or north arrow: just the shape of the tracks
   }
   return {};
 }
@@ -3297,7 +3295,7 @@ function photoSvg(kind, d, big) {
       const haze = Math.min(0.62, it.d / 18), c = `rgb(${Math.round(70 + 120 * haze)},${Math.round(78 + 112 * haze)},${Math.round(90 + 110 * haze)})`;
       for (const off of [0, -W, W]) { const x = it.b / 360 * W + off; if (x < -200 || x > W + 200) continue; fg += shapeSvg(it.s, x, y0, H, c); }
     }
-    const ticks = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW', 'N'].map((t, i) => `<text x="${i * 90}" y="16" font-family="IBM Plex Mono, monospace" font-size="11" fill="#2B3440" text-anchor="${i === 0 ? 'start' : i === 8 ? 'end' : 'middle'}" dx="${i === 0 ? 4 : i === 8 ? -4 : 0}">${t}</text><line x1="${i * 90}" y1="20" x2="${i * 90}" y2="28" stroke="#2B3440"/>`).join('');
+    const ticks = '';   // no compass: seekers see the order of landmarks, not which way the camera faces
     const water = d.water ? `<rect x="0" y="${y0 + 4}" width="${W}" height="${Hh - y0 - 4}" fill="#6E9BB8"/>${[0, 1, 2, 3, 4, 5, 6, 7, 8].map(i => `<line x1="${i * 84 + 10}" y1="${y0 + 14 + (i % 3) * 7}" x2="${i * 84 + 50}" y2="${y0 + 14 + (i % 3) * 7}" stroke="#DCE9F2" stroke-width="2" opacity="0.7"/>`).join('')}` : `<rect x="0" y="${y0}" width="${W}" height="${Hh - y0}" fill="#4A535C"/>`;
     const id = 'sk' + Math.random().toString(36).slice(2, 7);
     const scene = `<rect width="${W}" height="${y0}" fill="url(#${id}g)"/>${fg}${back}${water}${ticks}`;
@@ -3309,8 +3307,8 @@ function photoSvg(kind, d, big) {
     const water = (d.water || []).map(ring => `<path d="M${ring.map(p => X(p) + ',' + Y(p)).join('L')}Z" fill="#A9CBE0"/>`).join('');
     const segs = (d.segs || []).map(sg => `<polyline points="${sg.p.map(p => X(p) + ',' + Y(p)).join(' ')}" fill="none" stroke="#4B4F55" stroke-width="${sg.n > 1 ? 4 : 2.5}" stroke-linecap="round" stroke-linejoin="round"/>`).join('');
     const dots = (d.dots || []).map(p => `<circle cx="${X(p)}" cy="${Y(p)}" r="5" fill="#FFFFFF" stroke="#2E3237" stroke-width="2"/>`).join('');
-    const bar = 0.5 * sc;
-    return `<svg class="photo" viewBox="0 0 ${S2} ${S2}" role="img" aria-label="Photo of the local area map"><defs><clipPath id="mclip"><rect width="${S2}" height="${S2}" rx="6"/></clipPath></defs><g clip-path="url(#mclip)"><rect width="${S2}" height="${S2}" fill="#ECE8DF"/>${water}${segs}${dots}<circle cx="${S2 / 2}" cy="${S2 / 2}" r="7" fill="#D7263D" stroke="#FFFFFF" stroke-width="2"/><text x="${S2 / 2 + 10}" y="${S2 / 2 - 9}" font-family="Atkinson Hyperlegible, sans-serif" font-size="11" font-weight="700" fill="#D7263D">You are here</text><g transform="translate(${S2 - 22},24)"><polygon points="0,-12 6,6 0,2 -6,6" fill="#2E3237"/><text y="18" text-anchor="middle" font-size="10" font-family="IBM Plex Mono, monospace" fill="#2E3237">N</text></g><line x1="12" y1="${S2 - 14}" x2="${12 + bar}" y2="${S2 - 14}" stroke="#2E3237" stroke-width="3"/><text x="12" y="${S2 - 20}" font-size="10" font-family="IBM Plex Mono, monospace" fill="#2E3237">500 m</text></g></svg>`;
+    const bar = (R < 1 ? 0.2 : 0.5) * sc;
+    return `<svg class="photo" viewBox="0 0 ${S2} ${S2}" role="img" aria-label="Photo of the local area map"><defs><clipPath id="mclip"><rect width="${S2}" height="${S2}" rx="6"/></clipPath></defs><g clip-path="url(#mclip)"><rect width="${S2}" height="${S2}" fill="#ECE8DF"/>${water}${segs}${dots}<circle cx="${S2 / 2}" cy="${S2 / 2}" r="7" fill="#D7263D" stroke="#FFFFFF" stroke-width="2"/><text x="${S2 / 2 + 10}" y="${S2 / 2 - 9}" font-family="Atkinson Hyperlegible, sans-serif" font-size="11" font-weight="700" fill="#D7263D">You are here</text><line x1="12" y1="${S2 - 14}" x2="${12 + bar}" y2="${S2 - 14}" stroke="#2E3237" stroke-width="3"/><text x="12" y="${S2 - 20}" font-size="10" font-family="IBM Plex Mono, monospace" fill="#2E3237">${R < 1 ? '200 m' : '500 m'}</text></g></svg>`;
   }
   return '';
 }
