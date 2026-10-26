@@ -1828,11 +1828,18 @@ const STANDALONE = typeof PZ_STANDALONE !== 'undefined' && PZ_STANDALONE;
 const BROKERS = ['wss://broker.emqx.io:8084/mqtt', 'wss://test.mosquitto.org:8081/mqtt', 'wss://broker.hivemq.com:8884/mqtt'];
 class RelayDB {
   constructor(client, ns) {
-    this.c = client; this.ns = ns; this.m = new Map(); this.subs = new Set(); this.topics = new Set(); this.pend = false; this.waiters = new Map();
+    this.c = client; this.ns = ns; this.m = new Map(); this.own = new Map(); this.subs = new Set(); this.topics = new Set(); this.pend = false; this.waiters = new Map();
     this.local = new LocalDB();
     client.on('message', (topic, payload) => {
       if (!topic.startsWith(ns + '/')) return;
       const path = topic.slice(ns.length + 1);
+      // our own earlier writes echo back after newer local ones: skip them so the newer state isn't undone
+      const text = payload && payload.length ? new TextDecoder().decode(payload) : '';
+      const mine = this.own.get(path);
+      if (mine && mine.length) {
+        const i = mine.indexOf(text);
+        if (i >= 0) { mine.splice(0, i + 1); if (mine.length) return; }
+      }
       if (!payload || !payload.length) this.m.delete(path);
       else { try { this.m.set(path, JSON.parse(new TextDecoder().decode(payload))); } catch (e) { return; } }
       const w = this.waiters.get(path); if (w) { this.waiters.delete(path); w.forEach(f => f()); }
@@ -1845,7 +1852,8 @@ class RelayDB {
   _put(path, v) {
     if (v === undefined) this.m.delete(path); else this.m.set(path, v);
     this._emit();
-    return new Promise((res, rej) => this.c.publish(this.ns + '/' + path, v === undefined ? '' : JSON.stringify(v), { qos: 1, retain: true }, e => e ? rej({ code: 'unavailable', message: String(e) }) : res()));
+    const body = v === undefined ? '' : JSON.stringify(v); const arr = this.own.get(path) || []; arr.push(body); if (arr.length > 20) arr.shift(); this.own.set(path, arr);
+    return new Promise((res, rej) => this.c.publish(this.ns + '/' + path, body, { qos: 1, retain: true }, e => e ? rej({ code: 'unavailable', message: String(e) }) : res()));
   }
   async _load(path) {
     await this._sub(path);
@@ -2733,16 +2741,27 @@ function tabAsk(T) {
   else if (e.noAsk > T) why = `No questions until ${hm(e.noAsk)}.`;
   else if (qs.pending) why = 'One question at a time.';
   else if (!p || !p.stat) why = 'Stop at a station to ask.';
-  // thermometer
-  const th = pl.thermo, moved = th && p && p.stat ? Dist(B.S.get(th.from), B.S.get(p.at)) : 0;
-  h += `<div class="thermo"><span class="eyebrow">Thermometer</span>${th ? `<p>Started at <b>${esc(stName(th.from))}</b>. You have moved ${moved.toFixed(1)} km in a straight line.</p>` : '<p>Start it at a station, travel, then ask whether you got hotter or colder.</p>'}${(!th || (p && p.stat && p.at !== th.from)) ? `<button class="ghost" data-act="thermoStart"${p && p.stat && T >= rd.hideEnd ? '' : ' disabled'}>${th ? 'Restart here' : 'Start here'}</button>` : ''}</div>`;
+  // thermometer: distance so far is measured in a straight line from the start station, live even while travelling
+  const th = pl.thermo, here = pl.j && xyAt(B, pl.j, T), from = th && B.S.get(th.from);
+  const moved = th && here && from ? Math.hypot(here.x - from.x, here.y - from.y) : 0;
+  const canStart = p && p.stat && T >= rd.hideEnd;
+  let thBox = '';
+  if (!th) thBox = `<div class="thermo"><span class="eyebrow">Thermometer · step 1 of 3</span><p>Start the thermometer at the station you're at, travel, then ask whether you got hotter or colder.</p><button class="primary" data-act="thermoStart"${canStart ? '' : ' disabled'}>Start thermometer here</button>${canStart ? '' : `<p class="muted small">${T < rd.hideEnd ? 'Available once the hiding time ends.' : 'Stop at a station first.'}</p>`}</div>`;
+  else {
+    const minD = Math.min(...questionList(B).filter(q => q.cat === 'thermo' && !qs.asked.has(q.id)).map(q => q.D), Infinity);
+    const ready = moved >= minD && p && p.stat;
+    thBox = `<div class="thermo"><span class="eyebrow">Thermometer · step ${ready ? 3 : 2} of 3</span><p>Started at <b>${esc(stName(th.from))}</b>. You've moved <b>${moved.toFixed(1)} km</b> in a straight line.</p><p class="muted small">${ready ? 'Ask one of the unlocked questions below.' : moved >= minD ? 'Far enough. Stop at a station to ask.' : `Travel at least ${minD} km away from ${esc(stName(th.from))}, then stop at a station.`}</p>${canStart && p.at !== th.from ? '<button class="link" data-act="thermoStart">Start again from this station instead</button>' : ''}</div>`;
+  }
+  if (S.askCat !== 'thermo' && th) thBox = `<p class="muted small">Thermometer running from ${esc(stName(th.from))}: ${moved.toFixed(1)} km so far.</p>`;
+  else if (S.askCat !== 'thermo') thBox = '';
   h += `<div class="chips cats" role="tablist">${QCATS.map(c => `<button class="chip${S.askCat === c.k ? ' on' : ''}" data-act="askCat" data-k="${c.k}" aria-pressed="${S.askCat === c.k}">${esc(c.n)}</button>`).join('')}</div>`;
   const cat = QCAT[S.askCat];
+  h += thBox;
   h += `<p class="muted small">${esc(cat.blurb)} The hider draws ${cat.draw} card${cat.draw > 1 ? 's' : ''} and keeps ${cat.keep}.${S.askCat === 'photo' ? ' <button class="link" data-act="guide">Landmark guide</button>' : ''}</p>${why ? `<p class="blocked">${esc(why)}</p>` : ''}<ul class="qlist">`;
   for (const q of questionList(B).filter(x => x.cat === S.askCat)) {
     const asked = qs.asked.has(q.id);
     let dis = !!why || asked, note = asked ? 'Asked' : '';
-    if (q.cat === 'thermo' && !asked) { if (!th) { dis = true; note = 'Start the thermometer first'; } else if (moved < q.D) { dis = true; note = `Move ${(q.D - moved).toFixed(1)} km more`; } }
+    if (q.cat === 'thermo' && !asked) { if (!th) { dis = true; note = 'Start the thermometer first'; } else if (moved < q.D) { dis = true; note = `Move ${(q.D - moved).toFixed(1)} km more`; } else note = 'Unlocked'; }
     if (q.cat === 'tent' && !asked && p) { const n = (B.poiBy[q.k] || []).filter(x => Dist(x, B.S.get(p.at)) <= q.R).length; if (n < 1) { dis = true; note = `No ${POI_WORD[q.k][1]} within ${q.R} km of you`; } }
     h += `<li><button class="qbtn" data-act="ask" data-q="${esc(q.id)}"${dis ? ' disabled' : ''}><span>${esc(q.label)}</span>${note ? `<em>${esc(note)}</em>` : ''}</button></li>`;
   }
@@ -2972,7 +2991,7 @@ const ACT = {
   stopNext: () => { stopNext(); renderPanel(now(), true); },
   zoomIn: () => playMap.zoomAt(1.4), zoomOut: () => playMap.zoomAt(1 / 1.4), locate: () => locateMe(), fit: () => playMap.fit(true),
   askCat: d => { S.askCat = d.k; renderPanel(now(), true); },
-  thermoStart: () => { const T = now(), pl = myPl(), p = posAt(pl.j, T); if (!p || !p.stat) return; saveMe(Object.assign({}, pl, { thermo: { from: p.at, t: r2(T) } })); },
+  thermoStart: () => { const T = now(), pl = myPl(), p = posAt(pl.j, T); if (!p || !p.stat) return; saveMe(Object.assign({}, pl, { thermo: { from: p.at, t: r2(T) } })); S.askCat = 'thermo'; toast(`Thermometer started at ${stName(p.at)}. Now travel.`); renderPanel(now(), true); },
   ask: d => askQuestion(d.q),
   toggleCands: (d, el) => { S.showCands = el.checked; },
   keepTog: d => { const pd = (S.priv.pend || [])[0]; if (!pd) return; if (S.keepSel.has(d.c)) S.keepSel.delete(d.c); else { if (S.keepSel.size >= pd.keep) S.keepSel.delete([...S.keepSel][0]); S.keepSel.add(d.c); } renderPanel(now(), true); },
