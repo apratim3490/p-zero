@@ -171,6 +171,10 @@ input:focus, select:focus { border-color: var(--accent); }
 .chal .primary, .callout .primary, .callout .ghost, .thermo .ghost { align-self: flex-start; }
 .pending { border-left: 4px solid var(--accent-fill); }
 .callout.host { border-color: var(--accent-fill); }
+.lvl { display: inline-block; font: 600 10px var(--f-mono); text-transform: uppercase; letter-spacing: .08em; padding: 2px 6px; border-radius: 3px; margin-right: 4px; vertical-align: 1px; border: 1px solid var(--rule); }
+.lvl-easy { color: var(--good); border-color: color-mix(in srgb, var(--good) 50%, var(--rule)); }
+.lvl-medium { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 50%, var(--rule)); }
+.lvl-hard, .lvl-risky { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 50%, var(--rule)); }
 .reward { font: 600 13px var(--f-mono); }
 .qlist { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
 .qbtn { width: 100%; text-align: left; background: var(--raise); border: 1px solid var(--rule); border-radius: var(--r); padding: 10px 12px; display: flex; flex-direction: column; gap: 2px; }
@@ -1018,42 +1022,79 @@ function handBonus(hand) { return hand.reduce((a, id) => { const t = cardType(id
 
 // ---------- challenges (Chase, Race, Territory) ----------
 const CH_INFO = {
-  wait: { n: 'Platform vigil', how: 'Stay on this platform. The reward lands when the time is up.' },
-  dice: { n: 'Departure dice', how: 'Roll as many times as you dare, up to five. Each roll takes 5 minutes. A 1 wipes the lot.' },
-  memory: { n: 'Line memory', how: 'Memorise the order of five line colours, then tap them back.' },
+  wait: { n: 'Platform vigil', how: 'Stay on this platform. The reward lands when the time is up. No risk.' },
+  dice: { n: 'Departure dice', how: 'Roll up to five times, 5 minutes a roll. Each roll raises the multiplier, but a 1 wipes the lot.' },
+  memory: { n: 'Line memory', how: 'Memorise the order of the line colours, then tap them back.' },
   quiz: { n: 'Route quiz', how: 'Three questions: which line links these two stations?' },
-  sums: { n: 'Fare sums', how: 'Six quick sums in 30 real seconds.' },
-  errand: { n: 'Errand', how: 'Reach the named station before the deadline for a big reward.' },
+  sums: { n: 'Fare sums', how: 'Quick sums against the clock, in real seconds.' },
+  errand: { n: 'Errand', how: 'Reach the named station before the deadline. Miss it and you get nothing.' },
 };
+// ---------- challenge rewards follow difficulty ----------
+// One earning rate per minute of game time, raised for difficulty: a no-risk wait earns the base rate,
+// and a hard challenge played at a typical success rate earns about 60% more per minute.
+const CH_RATE = { none: 0.8, easy: 0.9, medium: 1.05, hard: 1.3, risky: 1.05 };
+const CH_LEVEL_NAME = { none: 'No risk', easy: 'Easy', medium: 'Medium', hard: 'Hard', risky: 'Risky' };
+// typical share of items a player gets right at each level (used to price each correct answer)
+const CH_SUCCESS = { memory: { easy: 0.85, medium: 0.7, hard: 0.5 }, quiz: { easy: 0.8, medium: 0.6, hard: 0.45 }, sums: { easy: 0.85, medium: 0.65, hard: 0.5 } };
+const DICE_MULT = 1.55;                                     // keeps the best dice strategy at about the medium rate
+const diceMult = rolls => Math.round(DICE_MULT * (1 + 0.25 * (rolls - 1)) * 100) / 100;
+// price each correct answer in whole coins, then set the time so the typical earning rate stays on target
+function priceItems(c, kind, level, mins, items) {
+  const p = CH_SUCCESS[kind][level], rate = CH_RATE[level];
+  c.per = Math.max(1, Math.round(rate * mins / (items * p)));
+  c.time = Math.max(4, Math.round(c.per * items * p / rate));
+}
 function challengeAt(B, stId, seed, mode) {
   const r = rng(hashStr(seed + '|' + stId));
   const multi = B.list.length > 1 && B.L.size >= 3;
   const kinds = [['wait', 3], ['dice', 3], ['sums', 2]];
   if (multi) kinds.push(['memory', 2], ['quiz', 2]);
   if (mode !== 'territory') kinds.push(['errand', 2]);
-  const kind = wpick(r, kinds);
+  let kind = wpick(r, kinds);
+  const level = wpick(r, [['easy', 2], ['medium', 2], ['hard', 1]]);
   const here = B.S.get(stId);
-  const c = { kind, st: stId };
-  if (kind === 'wait') { c.mins = pick(r, [15, 20, 25, 30, 40]); c.val = Math.round(c.mins * 0.7); c.time = c.mins; }
-  if (kind === 'dice') { c.per = 5; c.max = 5; }
-  if (kind === 'sums') { c.time = 8; c.items = []; for (let i = 0; i < 6; i++) { const op = pick(r, ['+', '−', '×']); let a, b; if (op === '×') { a = 3 + Math.floor(r() * 10); b = 3 + Math.floor(r() * 10); } else { a = 12 + Math.floor(r() * 80); b = 5 + Math.floor(r() * 40); if (op === '−' && b > a) [a, b] = [b, a]; } c.items.push({ a, b, op, ans: op === '+' ? a + b : op === '−' ? a - b : a * b }); } }
-  if (kind === 'memory') { const ls = [...B.L.values()].filter(l => !/shuttle/i.test(l.n)); c.time = 10; c.seq = []; for (let i = 0; i < 5; i++) c.seq.push(pick(r, ls).id); c.opts = ls.slice(0, 8).map(l => l.id); c.seq = c.seq.map(id => c.opts.includes(id) ? id : c.opts[0]); }
+  const c = { kind, st: stId, level };
+  if (kind === 'wait') { c.level = 'none'; c.mins = pick(r, [15, 20, 25, 30, 40]); c.val = Math.round(c.mins * CH_RATE.none); c.time = c.mins; }
+  if (kind === 'dice') { c.level = 'risky'; c.per = 5; c.max = 5; }
+  if (kind === 'sums') {
+    const n = { easy: 5, medium: 6, hard: 8 }[level]; c.secs = { easy: 40, medium: 30, hard: 30 }[level]; c.time = 8; c.items = [];
+    for (let i = 0; i < n; i++) {
+      const op = level === 'easy' ? pick(r, ['+', '−']) : pick(r, ['+', '−', '×']); let a, b;
+      if (op === '×') { const top = level === 'hard' ? 16 : 10; a = 3 + Math.floor(r() * top); b = 3 + Math.floor(r() * top); }
+      else { const big = level === 'hard' ? 160 : level === 'medium' ? 80 : 40; a = 10 + Math.floor(r() * big); b = 5 + Math.floor(r() * big / 2); if (op === '−' && b > a) [a, b] = [b, a]; }
+      c.items.push({ a, b, op, ans: op === '+' ? a + b : op === '−' ? a - b : a * b });
+    }
+    priceItems(c, 'sums', level, 8, n);
+  }
+  if (kind === 'memory') {
+    const ls = [...B.L.values()].filter(l => !/shuttle/i.test(l.n)), L = { easy: 4, medium: 5, hard: 7 }[level];
+    c.time = { easy: 8, medium: 10, hard: 12 }[level]; c.show = { easy: 6, medium: 5, hard: 6 }[level];
+    c.opts = ls.slice(0, 8).map(l => l.id); c.seq = []; for (let i = 0; i < L; i++) c.seq.push(pick(r, c.opts));
+    priceItems(c, 'memory', level, c.time, L);
+  }
   if (kind === 'quiz') {
     c.time = 10; c.items = [];
-    const ls = [...B.L.values()].filter(l => l.st.length >= 3);
+    const ls = [...B.L.values()].filter(l => l.st.length >= 3 && !/shuttle/i.test(l.n));
+    const span = { easy: [1, 1], medium: [1, 2], hard: [2, 4] }[level], nOpt = level === 'easy' ? 3 : 4;
     for (let i = 0; i < 3 && ls.length >= 2; i++) {
-      const L = pick(r, ls); const a = Math.floor(r() * (L.st.length - 1)); const b = Math.min(L.st.length - 1, a + 1 + Math.floor(r() * 3));
-      const wrong = shuffle(ls.filter(x => x.id !== L.id && !(B.S.get(L.st[a]).lines.includes(x.id) && B.S.get(L.st[b]).lines.includes(x.id))), r).slice(0, 3).map(x => x.id);
+      const L = pick(r, ls); const a = Math.floor(r() * (L.st.length - 1)); const b = Math.min(L.st.length - 1, a + span[0] + Math.floor(r() * (span[1] - span[0] + 1)));
+      const both = x => B.S.get(L.st[a]).lines.includes(x.id) && B.S.get(L.st[b]).lines.includes(x.id);
+      let pool = ls.filter(x => x.id !== L.id && !both(x));
+      if (level === 'hard') { const near = pool.filter(x => B.S.get(L.st[a]).lines.includes(x.id) || B.S.get(L.st[b]).lines.includes(x.id)); pool = near.concat(shuffle(pool.filter(x => !near.includes(x)), r)); }
+      else pool = shuffle(pool, r);
+      const wrong = pool.slice(0, nOpt - 1).map(x => x.id);
       c.items.push({ a: L.st[a], b: L.st[b], ans: L.id, opts: shuffle([L.id, ...wrong], r) });
     }
-    if (!c.items.length) { c.kind = 'wait'; c.mins = 20; c.val = 14; c.time = 20; }
+    if (!c.items.length) { c.kind = 'wait'; c.level = 'none'; c.mins = 20; c.val = Math.round(20 * CH_RATE.none); c.time = 20; }
+    else priceItems(c, 'quiz', level, 10, c.items.length);
   }
   if (kind === 'errand') {
-    const lo = B.scale * 0.1, hi = B.scale * 0.3;
-    const opts = B.list.filter(s => s.id !== stId && Dist(s, here) >= lo && Dist(s, here) <= hi);
+    const band = { easy: [0.06, 0.14], medium: [0.12, 0.24], hard: [0.2, 0.34] }[level], slack = { easy: [1.8, 15], medium: [1.5, 10], hard: [1.25, 5] }[level];
+    const opts = B.list.filter(s => s.id !== stId && Dist(s, here) >= B.scale * band[0] && Dist(s, here) <= B.scale * band[1]);
     const tgt = opts.length ? pick(r, opts) : B.list.find(s => s.id !== stId);
-    const rt = route(B, stId, tgt.id, 0, {});
-    c.target = tgt.id; c.within = Math.round((rt ? rt.dur : 60) * 1.5 + 15); c.val = Math.round(18 + Dist(here, tgt) * 3);
+    const rt = route(B, stId, tgt.id, 0, {}), dur = rt ? rt.dur : 60;
+    c.target = tgt.id; c.within = Math.round(dur * slack[0] + slack[1]);
+    c.val = Math.round(CH_RATE[level] * dur + (rt ? rt.fare : 0));   // pays the trip's fare back on top of the time
   }
   return c;
 }
@@ -1108,7 +1149,7 @@ function territoryScore(game, B) {
   return sc;
 }
 
-const PZ = { questionStrength, rewardOf, lineEdges, decPoly, waterDist, trackPoint, departures, photoData, rng, hashStr, Dist, shuffle, clamp, r2, genCity, normalizeClaude, ensureConnected, prepare, route, reachTimes, fareOf, legsOf, posAt, jEnd, isMoving, truncate, departurePoint, xyAt, violates, gameNow, fmtClock, fmtDur, MODES, RATES, defaultSettings, TEAMS, PLAYER_COLORS, QCATS, QCAT, questionList, qById, answerQ, answerText, candidates, CURSES, POWERS, buildDeck, cardType, cardInfo, handBonus, CH_INFO, challengeAt, effectsFor, tagTimes, territoryScore, nearestOf, MODE_LABEL, POI_WORD, POI_KINDS, WAIT, SPEED };
+const PZ = { CH_RATE, CH_SUCCESS, diceMult, challengeAt, questionStrength, rewardOf, lineEdges, decPoly, waterDist, trackPoint, departures, photoData, rng, hashStr, Dist, shuffle, clamp, r2, genCity, normalizeClaude, ensureConnected, prepare, route, reachTimes, fareOf, legsOf, posAt, jEnd, isMoving, truncate, departurePoint, xyAt, violates, gameNow, fmtClock, fmtDur, MODES, RATES, defaultSettings, TEAMS, PLAYER_COLORS, QCATS, QCAT, questionList, qById, answerQ, answerText, candidates, CURSES, POWERS, buildDeck, cardType, cardInfo, handBonus, CH_INFO, challengeAt, effectsFor, tagTimes, territoryScore, nearestOf, MODE_LABEL, POI_WORD, POI_KINDS, WAIT, SPEED };
 if (typeof module !== 'undefined') module.exports = PZ;
 
 /* ================= PLATFORM ZERO — ready-made city networks (simplified, approximate positions) ================= */
@@ -2216,7 +2257,7 @@ function rulesHtml(mode) {
   const m = MODES[mode];
   let extra = '';
   if (mode === 'hide') extra = `<h4>Question categories</h4><ul class="cats">${QCATS.map(c => `<li><b>${esc(c.n)}</b> · ${esc(c.blurb)}</li>`).join('')}</ul><p class="muted small">Rewards follow difficulty: every answer deals the hider cards, from draw 1 keep 1 for questions that give little away up to draw 5 keep 2 for the most revealing. The Ask tab shows each question's reward.</p>`;
-  if (mode !== 'hide') extra = `<h4>Station challenges</h4><ul class="cats">${Object.values(CH_INFO).filter((c, i) => mode !== 'territory' || i < 5).map(c => `<li><b>${esc(c.n)}</b> · ${esc(c.how)}</li>`).join('')}</ul>`;
+  if (mode !== 'hide') extra = `<h4>Station challenges</h4><ul class="cats">${Object.values(CH_INFO).filter((c, i) => mode !== 'territory' || i < 5).map(c => `<li><b>${esc(c.n)}</b> · ${esc(c.how)}</li>`).join('')}</ul><p class="muted small">Each station's challenge is Easy, Medium or Hard. Harder ones pay more for the time they take: played at a typical standard, a Hard challenge earns about 60% more per minute than waiting on the platform.</p>`;
   return `<h2>${esc(m.n)}</h2><ol class="rules">${RULES[mode].map(r => `<li>${esc(r)}</li>`).join('')}</ol>${extra}<p class="muted small">Travel times come from the map: each line has a speed, boarding means waiting for the next service, and you can walk between stations up to ${WALK_MAX} km apart.</p><div class="mrow"><button class="primary" data-act="close">Got it</button></div>`;
 }
 
@@ -2779,13 +2820,13 @@ function tabStation(T) {
   return h + '</article>';
 }
 function chalReward(c) {
-  const unit = S.game.mode === 'territory' ? 'strength' : 'coins';
-  if (c.kind === 'wait') return `<p class="reward">${c.mins} min on the platform · ${c.val} ${unit}</p>`;
-  if (c.kind === 'dice') return `<p class="reward">Score the total of your dice in ${unit}</p>`;
-  if (c.kind === 'memory') return `<p class="reward">4 ${unit} per colour in the right place · takes 10 min</p>`;
-  if (c.kind === 'quiz') return `<p class="reward">7 ${unit} per right answer · takes 10 min</p>`;
-  if (c.kind === 'sums') return `<p class="reward">3 ${unit} per right answer · takes 8 min</p>`;
-  if (c.kind === 'errand') return `<p class="reward">Reach ${esc(stName(c.target))} within ${fmtDur(c.within)} · ${c.val} coins</p>`;
+  const unit = S.game.mode === 'territory' ? 'strength' : 'coins', n = c.seq ? c.seq.length : c.items ? c.items.length : 0, lvl = `<span class="lvl lvl-${c.level}">${CH_LEVEL_NAME[c.level] || ''}</span>`;
+  if (c.kind === 'wait') return `<p class="reward">${lvl} ${c.mins} min on the platform · ${c.val} ${unit}</p>`;
+  if (c.kind === 'dice') return `<p class="reward">${lvl} dice total × ${diceMult(1)} after 1 roll, rising to × ${diceMult(5)} after 5 · 5 min a roll</p>`;
+  if (c.kind === 'memory') return `<p class="reward">${lvl} ${n} colours, ${c.show} seconds to look · ${c.per} ${unit} each in the right place, up to ${c.per * n} · ${c.time} min</p>`;
+  if (c.kind === 'quiz') return `<p class="reward">${lvl} ${c.items[0] ? c.items[0].opts.length : 4} choices each · ${c.per} ${unit} per right answer, up to ${c.per * n} · ${c.time} min</p>`;
+  if (c.kind === 'sums') return `<p class="reward">${lvl} ${n} sums in ${c.secs} real seconds · ${c.per} ${unit} each, up to ${c.per * n} · ${c.time} min</p>`;
+  if (c.kind === 'errand') return `<p class="reward">${lvl} reach ${esc(stName(c.target))} within ${fmtDur(c.within)} · ${c.val} coins, including the fare</p>`;
   return '';
 }
 
@@ -3154,9 +3195,9 @@ function startChallenge(stId) {
   if (c.kind === 'wait') return openModal(`<h2>${esc(info.n)}</h2><p>${esc(info.how)}</p>${chalReward(c)}<div class="mrow"><button class="ghost" data-act="close">Not now</button><button class="primary" data-act="waitGo">Start waiting</button></div>`);
   if (c.kind === 'errand') return openModal(`<h2>${esc(info.n)}</h2><p>Get to <b>${esc(stName(c.target))}</b> by ${hm(T + c.within)} to earn ${c.val} coins. You can only run one errand at a time.</p><div class="mrow"><button class="ghost" data-act="close">Not now</button><button class="primary" data-act="errandGo">Accept errand</button></div>`);
   if (c.kind === 'dice') { Object.assign(S.mini, { rolls: [], done: false }); return renderDice(); }
-  if (c.kind === 'memory') { Object.assign(S.mini, { phase: 'show', input: [], left: 5 }); renderMemory(); S.mini.timer = setInterval(() => { if (!S.mini) return; S.mini.left--; if (S.mini.left <= 0) { clearInterval(S.mini.timer); S.mini.timer = null; S.mini.phase = 'input'; } renderMemory(); }, 1000); return; }
+  if (c.kind === 'memory') { Object.assign(S.mini, { phase: 'show', input: [], left: c.show || 5 }); renderMemory(); S.mini.timer = setInterval(() => { if (!S.mini) return; S.mini.left--; if (S.mini.left <= 0) { clearInterval(S.mini.timer); S.mini.timer = null; S.mini.phase = 'input'; } renderMemory(); }, 1000); return; }
   if (c.kind === 'quiz') { Object.assign(S.mini, { i: 0, right: 0, last: null }); return renderQuiz(); }
-  if (c.kind === 'sums') { Object.assign(S.mini, { end: Date.now() + 30000 }); renderSums(); S.mini.timer = setInterval(() => { if (!S.mini) return; const left = Math.ceil((S.mini.end - Date.now()) / 1000); const el = $('#sumsLeft'); if (el) el.textContent = Math.max(0, left) + 's'; if (left <= 0) gradeSums(); }, 250); }
+  if (c.kind === 'sums') { Object.assign(S.mini, { end: Date.now() + c.secs * 1000 }); renderSums(); S.mini.timer = setInterval(() => { if (!S.mini) return; const left = Math.ceil((S.mini.end - Date.now()) / 1000); const el = $('#sumsLeft'); if (el) el.textContent = Math.max(0, left) + 's'; if (left <= 0) gradeSums(); }, 250); }
 }
 const PIPS = ['', '⚀', '⚁', '⚂', '⚃', '⚄', '⚅'];
 function renderDice() {
@@ -3164,29 +3205,30 @@ function renderDice() {
   const over = bust || m.rolls.length >= m.c.max;
   openModal(`<h2>${esc(CH_INFO.dice.n)}</h2><p>${esc(CH_INFO.dice.how)}</p>
     <div class="dice" aria-live="polite">${m.rolls.map(r => `<span class="die${r === 1 ? ' bust' : ''}" aria-label="${r}">${PIPS[r]}</span>`).join('') || '<span class="muted">No rolls yet.</span>'}</div>
-    <p class="lede">${bust ? 'A 1. Everything is lost.' : `Total so far: <b>${sum}</b> ${unit} · ${m.rolls.length * m.c.per} min used`}</p>
-    <div class="mrow">${over ? `<button class="primary" data-act="diceBank">${bust ? 'Accept' : 'Bank ' + sum}</button>` : `<button class="ghost" data-act="diceBank"${m.rolls.length ? '' : ' disabled'}>Bank ${sum}</button><button class="primary" data-act="diceRoll">Roll</button>`}</div>`);
+    ${m.rolls.length ? '' : `<p class="muted small">Multiplier: ${[1, 2, 3, 4, 5].map(k => `${k} roll${k > 1 ? 's' : ''} × ${diceMult(k)}`).join(' · ')}</p>`}
+    <p class="lede">${bust ? 'A 1. Everything is lost.' : m.rolls.length ? `${sum} × ${diceMult(m.rolls.length)} = <b>${Math.round(sum * diceMult(m.rolls.length))}</b> ${unit} · ${m.rolls.length * m.c.per} min used${m.rolls.length < m.c.max ? ` · next roll makes it × ${diceMult(m.rolls.length + 1)}` : ''}` : 'Roll to start.'}</p>
+    <div class="mrow">${over ? `<button class="primary" data-act="diceBank">${bust ? 'Accept' : 'Bank ' + Math.round(sum * diceMult(m.rolls.length))}</button>` : `<button class="ghost" data-act="diceBank"${m.rolls.length ? '' : ' disabled'}>Bank ${m.rolls.length ? Math.round(sum * diceMult(m.rolls.length)) : 0}</button><button class="primary" data-act="diceRoll">Roll</button>`}</div>`);
 }
 function diceRoll() { const m = S.mini; if (!m || m.rolls.includes(1) || m.rolls.length >= m.c.max) return; m.rolls.push(1 + Math.floor(Math.random() * 6)); renderDice(); }
-function diceBank() { const m = S.mini; if (!m || !m.rolls.length) return; const val = m.rolls.includes(1) ? 0 : m.rolls.reduce((a, b) => a + b, 0); const c = m.c, mins = m.rolls.length * c.per; closeModal(); finishChallenge(c, val, mins); toast(val ? `Banked ${val}. Back on the move at ${hm(now() + mins)}.` : 'Bust. Better luck at the next station.'); }
+function diceBank() { const m = S.mini; if (!m || !m.rolls.length) return; const val = m.rolls.includes(1) ? 0 : Math.round(m.rolls.reduce((a, b) => a + b, 0) * diceMult(m.rolls.length)); const c = m.c, mins = m.rolls.length * c.per; closeModal(); finishChallenge(c, val, mins); toast(val ? `Banked ${val}. Back on the move at ${hm(now() + mins)}.` : 'Bust. Better luck at the next station.'); }
 function renderMemory() {
   const m = S.mini; if (!m) return; const L = id => S.B.L.get(id);
   let h = `<h2>${esc(CH_INFO.memory.n)}</h2>`;
   if (m.phase === 'show') h += `<p>Memorise this order. Hidden in ${m.left}s.</p><div class="seq">${m.c.seq.map(id => `<span class="sw" style="--lc:${L(id).c}">${esc(L(id).n)}</span>`).join('')}</div>`;
-  else h += `<p>Tap the lines in the same order. ${m.input.length} of 5.</p><div class="seq">${m.input.map(id => `<span class="sw" style="--lc:${L(id).c}">${esc(L(id).n)}</span>`).join('')}</div><div class="chips">${m.c.opts.map(id => `<button class="chip" data-act="memTap" data-l="${id}">${lineChip(id)}</button>`).join('')}</div>`;
+  else h += `<p>Tap the lines in the same order. ${m.input.length} of ${m.c.seq.length}.</p><div class="seq">${m.input.map(id => `<span class="sw" style="--lc:${L(id).c}">${esc(L(id).n)}</span>`).join('')}</div><div class="chips">${m.c.opts.map(id => `<button class="chip" data-act="memTap" data-l="${id}">${lineChip(id)}</button>`).join('')}</div>`;
   openModal(h);
 }
-function memTap(id) { const m = S.mini; if (!m || m.phase !== 'input') return; m.input.push(id); if (m.input.length >= 5) { const right = m.c.seq.filter((x, i) => m.input[i] === x).length; const c = m.c; closeModal(); finishChallenge(c, right * 4, c.time); toast(`${right} of 5 right: ${right * 4} ${S.game.mode === 'territory' ? 'strength' : 'coins'}.`); } else renderMemory(); }
+function memTap(id) { const m = S.mini; if (!m || m.phase !== 'input') return; m.input.push(id); if (m.input.length >= m.c.seq.length) { const right = m.c.seq.filter((x, i) => m.input[i] === x).length; const c = m.c; closeModal(); finishChallenge(c, right * c.per, c.time); toast(`${right} of ${c.seq.length} right: ${right * c.per} ${S.game.mode === 'territory' ? 'strength' : 'coins'}.`); } else renderMemory(); }
 function renderQuiz() {
   const m = S.mini, it = m.c.items[m.i];
   openModal(`<h2>${esc(CH_INFO.quiz.n)} · ${m.i + 1} of ${m.c.items.length}</h2>${m.last != null ? `<p class="muted">${m.last ? 'Right.' : 'Not that one.'}</p>` : ''}<p class="lede">Which line runs between <b>${esc(stName(it.a))}</b> and <b>${esc(stName(it.b))}</b>?</p><div class="chips">${it.opts.map(id => `<button class="chip" data-act="quizPick" data-l="${id}">${lineChip(id)}</button>`).join('')}</div>`);
 }
-function quizPick(id) { const m = S.mini; if (!m) return; const it = m.c.items[m.i]; m.last = id === it.ans; if (m.last) m.right++; m.i++; if (m.i >= m.c.items.length) { const c = m.c, v = m.right * 7; closeModal(); finishChallenge(c, v, c.time); toast(`${m.right} right: ${v} ${S.game.mode === 'territory' ? 'strength' : 'coins'}.`); } else renderQuiz(); }
+function quizPick(id) { const m = S.mini; if (!m) return; const it = m.c.items[m.i]; m.last = id === it.ans; if (m.last) m.right++; m.i++; if (m.i >= m.c.items.length) { const c = m.c, v = m.right * c.per; closeModal(); finishChallenge(c, v, c.time); toast(`${m.right} right: ${v} ${S.game.mode === 'territory' ? 'strength' : 'coins'}.`); } else renderQuiz(); }
 function renderSums() {
   const m = S.mini;
-  openModal(`<h2>${esc(CH_INFO.sums.n)} · <span id="sumsLeft" class="mono">30s</span></h2><form data-form="sums" class="sums">${m.c.items.map((it, i) => `<label for="sum${i}"><span class="mono">${it.a} ${it.op} ${it.b} =</span><input id="sum${i}" inputmode="numeric" autocomplete="off"${i === 0 ? ' autofocus' : ''}></label>`).join('')}<div class="mrow"><button class="primary" type="submit">Hand in</button></div></form>`);
+  openModal(`<h2>${esc(CH_INFO.sums.n)} · <span id="sumsLeft" class="mono">${m.c.secs}s</span></h2><form data-form="sums" class="sums">${m.c.items.map((it, i) => `<label for="sum${i}"><span class="mono">${it.a} ${it.op} ${it.b} =</span><input id="sum${i}" inputmode="numeric" autocomplete="off"${i === 0 ? ' autofocus' : ''}></label>`).join('')}<div class="mrow"><button class="primary" type="submit">Hand in</button></div></form>`);
 }
-function gradeSums() { const m = S.mini; if (!m || m.graded) return; m.graded = true; const right = m.c.items.filter((it, i) => { const el = $('#sum' + i); return el && +String(el.value).trim().replace('−', '-') === it.ans && String(el.value).trim() !== ''; }).length; const c = m.c; closeModal(); finishChallenge(c, right * 3, c.time); toast(`${right} of 6 right: ${right * 3} ${S.game.mode === 'territory' ? 'strength' : 'coins'}.`); }
+function gradeSums() { const m = S.mini; if (!m || m.graded) return; m.graded = true; const right = m.c.items.filter((it, i) => { const el = $('#sum' + i); return el && +String(el.value).trim().replace('−', '-') === it.ans && String(el.value).trim() !== ''; }).length; const c = m.c; closeModal(); finishChallenge(c, right * c.per, c.time); toast(`${right} of ${c.items.length} right: ${right * c.per} ${S.game.mode === 'territory' ? 'strength' : 'coins'}.`); }
 
 /* ---------- menu ---------- */
 function openMenu() {
