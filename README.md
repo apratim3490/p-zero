@@ -10,4 +10,5 @@ Games sync through a free public MQTT relay (broker.emqx.io, with test.mosquitto
 
 - Greater London network: Oliver O'Brien (tubecreature), derived from OpenStreetMap, CC BY-NC.
 - River Thames: OS Open Data, Open Government Licence.
+- London borough boundaries: ONS (via martinjc/UK-GeoJSON), Open Government Licence.
 - MQTT client: mqtt.js (MIT), loaded from unpkg.
